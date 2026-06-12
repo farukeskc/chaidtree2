@@ -396,9 +396,9 @@ class TreeBuilderUI:
         ttk.Button(f, text="Export rules to Excel…", command=self._do_export).pack(
             fill=tk.X, padx=4, pady=2
         )
-        ttk.Button(
-            f, text="Open interactive view in browser", command=self._do_browser
-        ).pack(fill=tk.X, padx=4, pady=2)
+        ttk.Button(f, text="Save tree image (PNG)…", command=self._do_save_png).pack(
+            fill=tk.X, padx=4, pady=2
+        )
 
     def _do_gini(self):
         try:
@@ -426,11 +426,20 @@ class TreeBuilderUI:
         self.tree.export_rules_excel(path)
         messagebox.showinfo("Export", f"Exported rules to\n{path}")
 
-    def _do_browser(self):
+    def _do_save_png(self):
+        path = filedialog.asksaveasfilename(
+            defaultextension=".png", filetypes=[("PNG image", "*.png")]
+        )
+        if not path:
+            return
         try:
-            build_figure(self.tree).show()
+            png = figure_to_png(build_figure(self.tree))
+            with open(path, "wb") as fh:
+                fh.write(png)
         except Exception as exc:  # noqa: BLE001
-            messagebox.showerror("Browser view", str(exc))
+            messagebox.showerror("Save PNG", str(exc))
+            return
+        messagebox.showinfo("Save PNG", f"Saved tree image to\n{path}")
 
     # --------------------------------------------------------------- refresh
     def _selected_leaf_id(self):

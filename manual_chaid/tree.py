@@ -15,7 +15,7 @@ import pandas as pd
 from .binning import (
     DEFAULT_MAX_N_BINS,
     DEFAULT_MIN_BIN_SIZE,
-    assign_bins,
+    assign_children_bins,
     compute_candidate,
 )
 from .node import ChaidNode, Condition
@@ -162,7 +162,7 @@ class ManualChaidTree:
         idx = np.where(self._masks[node_id])[0]
         sub = self.X.iloc[idx]
         y_sub = self.y[idx]
-        bin_ids = assign_bins(conditions, sub)
+        bin_ids = assign_children_bins(conditions, sub)
         chi2, pval, _ = chi2_from_bins(bin_ids, y_sub)
 
         # Build child masks, dropping empty bins.
@@ -254,7 +254,7 @@ class ManualChaidTree:
         # Recompute parent chi2/p on the new (fewer) bins.
         idx = np.where(self._masks[parent_id])[0]
         sub = self.X.iloc[idx]
-        bin_ids = assign_bins(parent.split_conditions, sub)
+        bin_ids = assign_children_bins(parent.split_conditions, sub)
         chi2, pval, _ = chi2_from_bins(bin_ids, self.y[idx])
         parent.split_chi2 = chi2
         parent.split_pvalue = pval
@@ -333,7 +333,7 @@ class ManualChaidTree:
                 return
             sub = frame.iloc[pos]
             conds = [self.nodes[c].condition for c in node.children]
-            bin_ids = assign_bins(conds, sub)
+            bin_ids = assign_children_bins(conds, sub)
             for ci, child_id in enumerate(node.children):
                 child_pos = pos[bin_ids == ci]
                 if len(child_pos):
@@ -411,16 +411,26 @@ class ManualChaidTree:
         return obj
 
     def _rebuild_masks(self):
-        """Recompute every node's mask from its rule chain (root -> node)."""
+        """Recompute every node's mask from its rule chain (root -> node).
+
+        Siblings are partitioned *together* with the same precedence-aware,
+        first-match-wins logic used at split time, so reload reproduces the exact
+        node counts that were saved (forced eq/isnull bins keep their rows).
+        """
         self._masks = {0: np.ones(len(self.y), dtype=bool)}
 
         def rec(node_id):
             node = self.nodes[node_id]
-            for cid in node.children:
-                child = self.nodes[cid]
-                parent_mask = self._masks[node_id]
-                cond_mask = child.condition.evaluate(self.X[child.condition.variable])
-                self._masks[cid] = parent_mask & cond_mask
+            if node.is_leaf:
+                return
+            idx = np.where(self._masks[node_id])[0]
+            sub = self.X.iloc[idx]
+            conds = [self.nodes[c].condition for c in node.children]
+            bin_ids = assign_children_bins(conds, sub)
+            for ci, cid in enumerate(node.children):
+                full = np.zeros(len(self.y), dtype=bool)
+                full[idx[bin_ids == ci]] = True
+                self._masks[cid] = full
                 rec(cid)
 
         rec(0)

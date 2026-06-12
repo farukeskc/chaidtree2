@@ -52,6 +52,37 @@ def assign_bins(conditions: list, frame: pd.DataFrame) -> np.ndarray:
     return out
 
 
+def _precedence(cond) -> int:
+    """Lower wins. Forced special bins (isnull/eq) must beat overlapping ranges."""
+    if cond.kind == "isnull":
+        return 0
+    if cond.kind == "eq":
+        return 1
+    if cond.kind == "or":
+        return min((_precedence(m) for m in (cond.members or ())), default=3)
+    if cond.kind == "category":
+        return 2
+    return 3  # range
+
+
+def assign_children_bins(conditions: list, frame: pd.DataFrame) -> np.ndarray:
+    """Assign rows to child bins respecting forced-bin precedence.
+
+    Children may be stored in target-rate order, but a row that satisfies a
+    forced ``eq``/``isnull`` bin must always be claimed by it rather than by an
+    overlapping numeric range.  We therefore evaluate conditions in precedence
+    order, then map the result back to the original child positions so split-time
+    and reload-time partitions are identical.
+    """
+    order = sorted(range(len(conditions)), key=lambda i: _precedence(conditions[i]))
+    ordered = [conditions[i] for i in order]
+    raw = assign_bins(ordered, frame)
+    out = np.full(len(frame), -1, dtype=int)
+    for ordered_idx, orig_idx in enumerate(order):
+        out[raw == ordered_idx] = orig_idx
+    return out
+
+
 def numeric_ranges_from_thresholds(
     var: str, thresholds, inclusive_left: bool = True
 ) -> list:

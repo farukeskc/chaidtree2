@@ -129,6 +129,7 @@ class TreeBuilderUI:
         self.leaf_combo = ttk.Combobox(f, state="readonly")
         self.leaf_combo.pack(fill=tk.X, padx=4)
         self.leaf_combo.bind("<<ComboboxSelected>>", lambda e: self._load_candidates())
+        self._no_combo_wheel(self.leaf_combo)
 
         ttk.Label(f, text="Variables (by χ²):").pack(anchor="w", padx=4, pady=(6, 0))
         self.var_list = tk.Listbox(f, height=8, font=MONO, exportselection=False)
@@ -158,9 +159,11 @@ class TreeBuilderUI:
         val_var = tk.StringVar(value=str(value))
         op_var = tk.StringVar(value=op)
         ttk.Entry(row, textvariable=val_var, width=12).pack(side=tk.LEFT)
-        ttk.Combobox(
+        op_combo = ttk.Combobox(
             row, textvariable=op_var, values=OPERATORS, width=4, state="readonly"
-        ).pack(side=tk.LEFT, padx=3)
+        )
+        op_combo.pack(side=tk.LEFT, padx=3)
+        self._no_combo_wheel(op_combo)
         ttk.Button(
             row, text="✕", width=3, command=lambda: self._del_cutpoint(row)
         ).pack(side=tk.LEFT)
@@ -283,6 +286,7 @@ class TreeBuilderUI:
         ttk.Label(f, text="Parent node:").pack(anchor="w", padx=4)
         self.combine_parent = ttk.Combobox(f, state="readonly")
         self.combine_parent.pack(fill=tk.X, padx=4)
+        self._no_combo_wheel(self.combine_parent)
         self.combine_parent.bind(
             "<<ComboboxSelected>>", lambda e: self._load_combine_children()
         )
@@ -340,6 +344,7 @@ class TreeBuilderUI:
         ttk.Label(f, text="Node (subtree will be removed):").pack(anchor="w", padx=4)
         self.prune_combo = ttk.Combobox(f, state="readonly")
         self.prune_combo.pack(fill=tk.X, padx=4)
+        self._no_combo_wheel(self.prune_combo)
         ttk.Button(f, text="Prune node", command=self._do_prune).pack(
             anchor="e", padx=4, pady=4
         )
@@ -495,6 +500,15 @@ class TreeBuilderUI:
             return "break"  # stop the event before the sidebar's bind_all handler
 
         listbox.bind("<MouseWheel>", handler)
+
+    def _no_combo_wheel(self, combo):
+        """Stop a collapsed Combobox from changing value on wheel; scroll sidebar."""
+
+        def handler(event):
+            self._menu_canvas.yview_scroll(int(-event.delta / 120), "units")
+            return "break"  # suppress the default value-change class binding
+
+        combo.bind("<MouseWheel>", handler)
 
     def _bind_menu_wheel(self, event):
         self._menu_canvas.bind_all("<MouseWheel>", self._on_menu_wheel)

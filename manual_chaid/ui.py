@@ -134,6 +134,7 @@ class TreeBuilderUI:
         self.var_list = tk.Listbox(f, height=8, font=MONO, exportselection=False)
         self.var_list.pack(fill=tk.X, padx=4)
         self.var_list.bind("<<ListboxSelect>>", lambda e: self._select_variable())
+        self._own_wheel(self.var_list)
 
         self.cut_label = ttk.Label(f, text="Cut-offs:", font=("TkDefaultFont", 9, "bold"))
         self.cut_label.pack(anchor="w", padx=4, pady=(6, 0))
@@ -290,6 +291,7 @@ class TreeBuilderUI:
             f, height=6, selectmode=tk.EXTENDED, font=MONO, exportselection=False
         )
         self.combine_list.pack(fill=tk.X, padx=4)
+        self._own_wheel(self.combine_list)
         ttk.Button(f, text="Combine selected", command=self._do_combine).pack(
             anchor="e", padx=4, pady=4
         )
@@ -365,6 +367,7 @@ class TreeBuilderUI:
         f = self._section("4. Operation history")
         self.history_list = tk.Listbox(f, height=7, font=MONO)
         self.history_list.pack(fill=tk.X, padx=4)
+        self._own_wheel(self.history_list)
         ttk.Button(f, text="Undo last operation", command=self._do_undo).pack(
             anchor="e", padx=4, pady=4
         )
@@ -483,6 +486,15 @@ class TreeBuilderUI:
     def _on_ctrl_wheel(self, event):
         self.zoom_in() if event.delta > 0 else self.zoom_out()
         return "break"
+
+    def _own_wheel(self, listbox):
+        """Let a Listbox consume the wheel itself so the sidebar doesn't scroll too."""
+
+        def handler(event):
+            listbox.yview_scroll(int(-event.delta / 120), "units")
+            return "break"  # stop the event before the sidebar's bind_all handler
+
+        listbox.bind("<MouseWheel>", handler)
 
     def _bind_menu_wheel(self, event):
         self._menu_canvas.bind_all("<MouseWheel>", self._on_menu_wheel)

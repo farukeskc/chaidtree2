@@ -6,5 +6,6 @@ plotly>=5.18
 kaleido>=0.2.1
 pillow>=9.0
 openpyxl>=3.1
+pulp>=2.7
 # optbinning needs an sklearn API removed in 1.8; ropwr needs >=1.6.
 scikit-learn>=1.6,<1.8

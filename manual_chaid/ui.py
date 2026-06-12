@@ -23,6 +23,8 @@ class TreeBuilderUI:
     def __init__(self, tree):
         self.tree = tree
         self._photo = None  # keep a reference so Tk doesn't GC the image
+        self._base_img = None  # full-res rendered PIL image (pre-zoom)
+        self._zoom = 1.0
         self._candidates: dict = {}  # variable -> candidate dict for selected leaf
         self._cutpoint_rows: list = []  # list of (frame, value_var, op_var)
         self._current_var = None
@@ -43,15 +45,33 @@ class TreeBuilderUI:
         paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True)
 
-        # --- left: scrollable image canvas
+        # --- left: zoom toolbar + scrollable image canvas
         left = ttk.Frame(paned)
-        self.canvas = tk.Canvas(left, bg="white")
-        hbar = ttk.Scrollbar(left, orient=tk.HORIZONTAL, command=self.canvas.xview)
-        vbar = ttk.Scrollbar(left, orient=tk.VERTICAL, command=self.canvas.yview)
+        toolbar = ttk.Frame(left)
+        toolbar.pack(side=tk.TOP, fill=tk.X, padx=4, pady=2)
+        ttk.Button(toolbar, text="−", width=3, command=self.zoom_out).pack(side=tk.LEFT)
+        ttk.Button(toolbar, text="+", width=3, command=self.zoom_in).pack(side=tk.LEFT)
+        ttk.Button(toolbar, text="Reset", command=self.zoom_reset).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar, text="Fit width", command=self.zoom_fit).pack(side=tk.LEFT)
+        self.zoom_label = ttk.Label(toolbar, text="100%")
+        self.zoom_label.pack(side=tk.LEFT, padx=8)
+        ttk.Label(toolbar, text="(Ctrl + mouse-wheel to zoom)", foreground="gray").pack(
+            side=tk.LEFT
+        )
+
+        cv_frame = ttk.Frame(left)
+        cv_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.canvas = tk.Canvas(cv_frame, bg="white")
+        hbar = ttk.Scrollbar(cv_frame, orient=tk.HORIZONTAL, command=self.canvas.xview)
+        vbar = ttk.Scrollbar(cv_frame, orient=tk.VERTICAL, command=self.canvas.yview)
         self.canvas.configure(xscrollcommand=hbar.set, yscrollcommand=vbar.set)
         vbar.pack(side=tk.RIGHT, fill=tk.Y)
         hbar.pack(side=tk.BOTTOM, fill=tk.X)
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # scroll with wheel; zoom with Ctrl + wheel
+        self.canvas.bind("<MouseWheel>", self._on_wheel)
+        self.canvas.bind("<Shift-MouseWheel>", self._on_shift_wheel)
+        self.canvas.bind("<Control-MouseWheel>", self._on_ctrl_wheel)
         paned.add(left, weight=3)
 
         # --- right: scrollable controls
@@ -409,19 +429,65 @@ class TreeBuilderUI:
         self.cut_note.config(text="")
         self._current_var = None
 
+    # ----------------------------------------------------------------- zoom
+    def zoom_in(self):
+        self._set_zoom(self._zoom * 1.25)
+
+    def zoom_out(self):
+        self._set_zoom(self._zoom / 1.25)
+
+    def zoom_reset(self):
+        self._set_zoom(1.0)
+
+    def zoom_fit(self):
+        """Scale so the tree image fits the current canvas width."""
+        if self._base_img is None:
+            return
+        cw = self.canvas.winfo_width()
+        if cw > 1:
+            self._set_zoom(cw / self._base_img.width)
+
+    def _set_zoom(self, zoom: float):
+        self._zoom = max(0.1, min(8.0, zoom))
+        self._render_image()
+
+    def _on_wheel(self, event):
+        self.canvas.yview_scroll(int(-event.delta / 120), "units")
+
+    def _on_shift_wheel(self, event):
+        self.canvas.xview_scroll(int(-event.delta / 120), "units")
+
+    def _on_ctrl_wheel(self, event):
+        self.zoom_in() if event.delta > 0 else self.zoom_out()
+        return "break"
+
+    def _render_image(self):
+        """(Re)paint the cached base image at the current zoom factor."""
+        if self._base_img is None:
+            return
+        from PIL import Image, ImageTk
+
+        w = max(1, int(self._base_img.width * self._zoom))
+        h = max(1, int(self._base_img.height * self._zoom))
+        resized = self._base_img.resize((w, h), Image.LANCZOS)
+        self._photo = ImageTk.PhotoImage(resized)
+        self.canvas.delete("all")
+        self.canvas.create_image(0, 0, anchor="nw", image=self._photo)
+        self.canvas.configure(scrollregion=(0, 0, w, h))
+        self.zoom_label.config(text=f"{self._zoom * 100:.0f}%")
+
     # ---------------------------------------------------------------- redraw
     def redraw(self):
+        """Re-render the tree to a base image, then paint it at current zoom."""
         try:
-            from PIL import Image, ImageTk
+            from PIL import Image
 
             fig = build_figure(self.tree)
             png = figure_to_png(fig)
-            img = Image.open(io.BytesIO(png))
-            self._photo = ImageTk.PhotoImage(img)
-            self.canvas.delete("all")
-            self.canvas.create_image(0, 0, anchor="nw", image=self._photo)
-            self.canvas.configure(scrollregion=(0, 0, img.width, img.height))
+            self._base_img = Image.open(io.BytesIO(png))
+            self._render_image()
         except Exception as exc:  # noqa: BLE001
+            self._base_img = None
             self.canvas.delete("all")
             self.canvas.create_text(
                 20,

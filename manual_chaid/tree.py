@@ -477,6 +477,16 @@ class ManualChaidTree:
         df.to_excel(path, index=False)
         return df
 
+    # -- image export ---------------------------------------------------------
+    def save_png(self, path: str, scale: float = 2.0) -> str:
+        """Render the tree preview to a PNG file (requires plotly + kaleido)."""
+        from .render import build_figure, figure_to_png
+
+        png = figure_to_png(build_figure(self), scale=scale)
+        with open(path, "wb") as fh:
+            fh.write(png)
+        return path
+
 
 def _fmt(x) -> str:
     if x is None or (isinstance(x, float) and np.isnan(x)):

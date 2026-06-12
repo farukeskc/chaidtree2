@@ -433,9 +433,7 @@ class TreeBuilderUI:
         if not path:
             return
         try:
-            png = figure_to_png(build_figure(self.tree))
-            with open(path, "wb") as fh:
-                fh.write(png)
+            self.tree.save_png(path)
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Save PNG", str(exc))
             return

@@ -12,7 +12,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import numpy as np
 
-from .binning import conditions_from_cutpoints
+from .binning import categorical_conditions_from_groups, conditions_from_cutpoints
 from .node import OPERATORS
 from .render import build_figure, figure_to_png
 
@@ -26,7 +26,8 @@ class TreeBuilderUI:
         self._base_img = None  # full-res rendered PIL image (pre-zoom)
         self._zoom = 1.0
         self._candidates: dict = {}  # variable -> candidate dict for selected leaf
-        self._cutpoint_rows: list = []  # list of (frame, value_var, op_var)
+        self._cutpoint_rows: list = []  # numeric: list of (frame, value_var, op_var)
+        self._cat_rows: list = []  # categorical: list of (frame, category, group_var)
         self._current_var = None
         self._current_specials: list = []
 
@@ -148,9 +149,10 @@ class TreeBuilderUI:
 
         btns = ttk.Frame(f)
         btns.pack(fill=tk.X, padx=4, pady=4)
-        ttk.Button(btns, text="+ Add cut-off", command=self._add_cutpoint).pack(
-            side=tk.LEFT
+        self._add_cut_btn = ttk.Button(
+            btns, text="+ Add cut-off", command=self._add_cutpoint
         )
+        self._add_cut_btn.pack(side=tk.LEFT)
         ttk.Button(btns, text="Split", command=self._do_split).pack(side=tk.RIGHT)
 
     def _add_cutpoint(self, value="", op="<"):
@@ -201,6 +203,25 @@ class TreeBuilderUI:
             row.destroy()
         self._cutpoint_rows = []
 
+    # -- categorical group editor --------------------------------------------
+    def _add_cat_row(self, category, group_id):
+        row = ttk.Frame(self.cut_frame)
+        row.pack(fill=tk.X, pady=1)
+        ttk.Label(row, text=str(category)[:20], width=20, anchor="w").pack(side=tk.LEFT)
+        ttk.Label(row, text="group:").pack(side=tk.LEFT)
+        g_var = tk.StringVar(value=str(group_id))
+        ttk.Entry(row, textvariable=g_var, width=4).pack(side=tk.LEFT, padx=2)
+        self._cat_rows.append((row, category, g_var))
+
+    def _clear_cat_rows(self):
+        for row, _, _ in self._cat_rows:
+            row.destroy()
+        self._cat_rows = []
+
+    def _clear_editor(self):
+        self._clear_cutpoints()
+        self._clear_cat_rows()
+
     def _load_candidates(self):
         nid = self._selected_leaf_id()
         if nid is None:
@@ -224,7 +245,7 @@ class TreeBuilderUI:
             )
             if not r["splittable"]:
                 self.var_list.itemconfig(tk.END, foreground="gray")
-        self._clear_cutpoints()
+        self._clear_editor()
         self.specials_label.config(text="")
         self.cut_note.config(text="")
         self._current_var = None
@@ -236,7 +257,7 @@ class TreeBuilderUI:
         var = list(self._candidates.keys())[sel[0]]
         cand = self._candidates[var]
         self._current_var = var
-        self._clear_cutpoints()
+        self._clear_editor()
 
         conditions = cand["conditions"]
         specials = [c for c in conditions if c.kind in ("eq", "isnull")]
@@ -249,6 +270,7 @@ class TreeBuilderUI:
             self.specials_label.config(text="")
 
         if cand["dtype"] == "numerical":
+            self._add_cut_btn.state(["!disabled"])
             thresholds = sorted(
                 {
                     b
@@ -265,10 +287,15 @@ class TreeBuilderUI:
                 "strictly monotonic (smallest→largest or largest→smallest) to split."
             )
         else:
+            # editable categorical groups: one row per category with a group #
+            self._add_cut_btn.state(["disabled"])
             groups = [c for c in conditions if c.kind == "category"]
-            preview = " | ".join(c.describe() for c in groups)
+            for gi, gcond in enumerate(groups):
+                for cat in gcond.categories or ():
+                    self._add_cat_row(cat, gi)
             self.cut_note.config(
-                text="Categorical: optbinning groups are used as-is.\n" + preview
+                text="Categorical: edit each category's group #. Categories with "
+                "the same number are merged into one bin; change numbers to regroup."
             )
 
     def _do_split(self):
@@ -301,7 +328,18 @@ class TreeBuilderUI:
                     var, cutpoints, self._current_specials, descending=descending
                 )
             else:
-                conditions = cand["conditions"]
+                items = []
+                for _, cat, g_var in self._cat_rows:
+                    gid = g_var.get().strip()
+                    if gid == "":
+                        messagebox.showwarning(
+                            "Split", "Assign a group number to every category."
+                        )
+                        return
+                    items.append((cat, gid))
+                conditions = categorical_conditions_from_groups(
+                    var, items, self._current_specials
+                )
             res = self.tree.split(nid, var, conditions)
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Split failed", str(exc))
@@ -497,7 +535,7 @@ class TreeBuilderUI:
 
         # clear stale split selections
         self.var_list.delete(0, tk.END)
-        self._clear_cutpoints()
+        self._clear_editor()
         self.specials_label.config(text="")
         self.cut_note.config(text="")
         self._current_var = None

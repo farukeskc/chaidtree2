@@ -182,6 +182,30 @@ def conditions_from_cutpoints(
     return conds
 
 
+def categorical_conditions_from_groups(var: str, items: list, specials: list) -> list:
+    """Build category bin Conditions from a (category, group-id) assignment.
+
+    ``items`` is a list of ``(category, group_id)`` pairs from the cut-off editor;
+    categories sharing a group id are merged into one bin.  Configured ``specials``
+    stay left-most; the category groups follow, ordered by group id (numeric when
+    possible, else lexicographic).
+    """
+    conds: list[Condition] = list(specials)
+    groups: dict = {}
+    for cat, gid in items:
+        groups.setdefault(gid, []).append(cat)
+
+    def key(g):
+        try:
+            return (0, float(g))
+        except (TypeError, ValueError):
+            return (1, str(g))
+
+    for gid in sorted(groups, key=key):
+        conds.append(Condition(var, "category", categories=tuple(groups[gid])))
+    return conds
+
+
 def _special_conditions(
     var: str, x: pd.Series, separate_zero: bool, separate_value, has_null: bool
 ) -> list:

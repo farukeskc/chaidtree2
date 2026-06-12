@@ -75,21 +75,41 @@ class TreeBuilderUI:
         self.canvas.bind("<ButtonPress-1>", self._on_pan_start)
         self.canvas.bind("<B1-Motion>", self._on_pan_move)
         self.canvas.bind("<ButtonRelease-1>", self._on_pan_end)
-        paned.add(left, weight=3)
+        paned.add(left, weight=1)  # left canvas absorbs extra space on resize
 
-        # --- right: scrollable controls
-        right_outer = ttk.Frame(paned, width=380)
-        rc = tk.Canvas(right_outer, width=380, highlightthickness=0)
-        rsb = ttk.Scrollbar(right_outer, orient=tk.VERTICAL, command=rc.yview)
-        self.menu = ttk.Frame(rc)
-        self.menu.bind(
-            "<Configure>", lambda e: rc.configure(scrollregion=rc.bbox("all"))
+        # --- right: scrollable controls (fixed-width sidebar)
+        sidebar_w = 380
+        right_outer = ttk.Frame(paned, width=sidebar_w)
+        right_outer.pack_propagate(False)
+        self._menu_canvas = tk.Canvas(
+            right_outer, width=sidebar_w, highlightthickness=0
         )
-        rc.create_window((0, 0), window=self.menu, anchor="nw")
-        rc.configure(yscrollcommand=rsb.set)
+        rsb = ttk.Scrollbar(
+            right_outer, orient=tk.VERTICAL, command=self._menu_canvas.yview
+        )
+        self.menu = ttk.Frame(self._menu_canvas)
+        self._menu_window = self._menu_canvas.create_window(
+            (0, 0), window=self.menu, anchor="nw"
+        )
+        # keep the scrollregion in sync with the content height...
+        self.menu.bind(
+            "<Configure>",
+            lambda e: self._menu_canvas.configure(
+                scrollregion=self._menu_canvas.bbox("all")
+            ),
+        )
+        # ...and stretch the inner frame to the canvas width so sections fill it.
+        self._menu_canvas.bind(
+            "<Configure>",
+            lambda e: self._menu_canvas.itemconfigure(self._menu_window, width=e.width),
+        )
+        self._menu_canvas.configure(yscrollcommand=rsb.set)
         rsb.pack(side=tk.RIGHT, fill=tk.Y)
-        rc.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        paned.add(right_outer, weight=1)
+        self._menu_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # mouse-wheel scrolls the sidebar while the pointer is over it
+        self._menu_canvas.bind("<Enter>", self._bind_menu_wheel)
+        self._menu_canvas.bind("<Leave>", self._unbind_menu_wheel)
+        paned.add(right_outer, weight=0)  # sidebar keeps a stable width
 
         self._build_split_section()
         self._build_combine_section()
@@ -462,6 +482,16 @@ class TreeBuilderUI:
 
     def _on_ctrl_wheel(self, event):
         self.zoom_in() if event.delta > 0 else self.zoom_out()
+        return "break"
+
+    def _bind_menu_wheel(self, event):
+        self._menu_canvas.bind_all("<MouseWheel>", self._on_menu_wheel)
+
+    def _unbind_menu_wheel(self, event):
+        self._menu_canvas.unbind_all("<MouseWheel>")
+
+    def _on_menu_wheel(self, event):
+        self._menu_canvas.yview_scroll(int(-event.delta / 120), "units")
         return "break"
 
     def _on_pan_start(self, event):

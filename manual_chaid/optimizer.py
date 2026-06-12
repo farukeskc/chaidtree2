@@ -40,6 +40,10 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+# Sentinel decision for a constraint that spans the whole population (every leaf
+# under its assigned decision) rather than a single decision's slice.
+TOTAL = "TOTAL"
+
 # Functions exposed to user expressions (no builtins beyond these).
 _ALLOWED_FUNCS = {
     "np": np,
@@ -230,7 +234,7 @@ class ChaidTreeOptimizer:
         for c in spec.constraints:
             if c.kpi not in kpi_names:
                 raise ValueError(f"Constraint references undefined KPI '{c.kpi}'.")
-            if c.decision not in spec.decisions:
+            if c.decision != TOTAL and c.decision not in spec.decisions:
                 raise ValueError(
                     f"Constraint on '{c.kpi}' targets undefined decision '{c.decision}'."
                 )
@@ -279,7 +283,9 @@ class ChaidTreeOptimizer:
         kpi = next((k for k in spec.kpis if k.name == c.kpi), None)
         if kpi is None:
             return
-        d = c.decision
+        # TOTAL spans every decision; summing the active x term over all decisions
+        # makes each leaf contribute under whichever decision it is assigned.
+        decisions = spec.decisions if c.decision == TOTAL else [c.decision]
         if kpi.kind == "ratio":
             # ratio = sum(num) / sum(den); linearise the bound (den >= 0).
             if c.max is not None:
@@ -287,6 +293,7 @@ class ChaidTreeOptimizer:
                     pulp.lpSum(
                         x[l][d] * (S[kpi.num][d][l] - c.max * S[kpi.den][d][l])
                         for l in self.leaves
+                        for d in decisions
                     )
                     <= 0
                 )
@@ -295,6 +302,7 @@ class ChaidTreeOptimizer:
                     pulp.lpSum(
                         x[l][d] * (S[kpi.num][d][l] - c.min * S[kpi.den][d][l])
                         for l in self.leaves
+                        for d in decisions
                     )
                     >= 0
                 )
@@ -302,6 +310,7 @@ class ChaidTreeOptimizer:
             expr = pulp.lpSum(
                 x[l][d] * sum(w * S[m][d][l] for m, w in kpi.weights.items())
                 for l in self.leaves
+                for d in decisions
             )
             if c.max is not None:
                 prob += expr <= c.max
@@ -309,21 +318,24 @@ class ChaidTreeOptimizer:
                 prob += expr >= c.min
 
     # ---------------------------------------------------------- realised KPIs
-    def _kpi_value(self, kpi, S, pop, d):
-        if not pop:
+    def _kpi_value(self, kpi, S, pairs):
+        """Evaluate a KPI over a list of ``(leaf, decision)`` pairs."""
+        if not pairs:
             return None
         if kpi.kind == "ratio":
-            num = sum(S[kpi.num][d][l] for l in pop)
-            den = sum(S[kpi.den][d][l] for l in pop)
+            num = sum(S[kpi.num][d][l] for l, d in pairs)
+            den = sum(S[kpi.den][d][l] for l, d in pairs)
             return num / den if den != 0 else None
-        return sum(w * S[m][d][l] for l in pop for m, w in kpi.weights.items())
+        return sum(w * S[m][d][l] for l, d in pairs for m, w in kpi.weights.items())
 
     def _realised_kpis(self, spec, S, assignment) -> dict:
         out = {}
+        all_pairs = list(assignment.items())
         for kpi in spec.kpis:
             for d in spec.decisions:
-                pop = [l for l, dd in assignment.items() if dd == d]
-                out[(kpi.name, d)] = self._kpi_value(kpi, S, pop, d)
+                pairs = [(l, dd) for l, dd in all_pairs if dd == d]
+                out[(kpi.name, d)] = self._kpi_value(kpi, S, pairs)
+            out[(kpi.name, TOTAL)] = self._kpi_value(kpi, S, all_pairs)
         return out
 
     @staticmethod
@@ -362,7 +374,7 @@ class ChaidTreeOptimizer:
         bound = {(c.kpi, c.decision): c for c in spec.constraints}
         kpi_rows = []
         for kpi in spec.kpis:
-            for d in spec.decisions:
+            for d in [*spec.decisions, TOTAL]:
                 val = result.kpi_values.get((kpi.name, d))
                 c = bound.get((kpi.name, d))
                 cmin = c.min if c else None

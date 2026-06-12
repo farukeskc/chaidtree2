@@ -14,6 +14,7 @@ from dataclasses import asdict
 from tkinter import filedialog, messagebox, ttk
 
 from .optimizer import (
+    TOTAL,
     ConstraintDef,
     GoalDef,
     KpiDef,
@@ -385,7 +386,7 @@ class OptimizerUI:
                 combo["values"] = kpis
         for combo in self._dec_combos:
             if combo.winfo_exists():
-                combo["values"] = decisions
+                combo["values"] = [TOTAL, *decisions]
         # drop GC'd combos
         self._metric_combos = [c for c in self._metric_combos if c.winfo_exists()]
         self._kpi_combos = [c for c in self._kpi_combos if c.winfo_exists()]

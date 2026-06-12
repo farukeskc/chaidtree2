@@ -1,0 +1,75 @@
+{
+  "decisions": [
+    "Accept",
+    "Reject"
+  ],
+  "variables": [
+    {
+      "name": "vAcceptCount",
+      "per_decision": {
+        "Accept": "1",
+        "Reject": "0"
+      }
+    },
+    {
+      "name": "vRejectCount",
+      "per_decision": {
+        "Accept": "0",
+        "Reject": "1"
+      }
+    },
+    {
+      "name": "vCount",
+      "per_decision": {
+        "Accept": "1",
+        "Reject": "1"
+      }
+    }
+  ],
+  "metrics": [
+    {
+      "name": "mAcceptedCount",
+      "expr": "vAcceptCount"
+    },
+    {
+      "name": "mCount",
+      "expr": "vCount"
+    },
+    {
+      "name": "mBadCount",
+      "expr": "y"
+    },
+    {
+      "name": "mAcceptedBadCount",
+      "expr": "vAcceptCount*y"
+    }
+  ],
+  "kpis": [
+    {
+      "name": "kBadRatio",
+      "kind": "ratio",
+      "num": "mBadCount",
+      "den": "mCount",
+      "weights": {}
+    },
+    {
+      "name": "kAcceptedRatio",
+      "kind": "ratio",
+      "num": "mAcceptedCount",
+      "den": "mCount",
+      "weights": {}
+    }
+  ],
+  "constraints": [
+    {
+      "kpi": "kAcceptedRatio",
+      "decision": "TOTAL",
+      "min": 0.3,
+      "max": null
+    }
+  ],
+  "goal": {
+    "metric": "mAcceptedBadCount",
+    "sense": "min"
+  }
+}

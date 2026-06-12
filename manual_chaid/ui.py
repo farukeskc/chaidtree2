@@ -315,7 +315,11 @@ class TreeBuilderUI:
                     cutpoints.append({"op": op_var.get(), "value": float(txt)})
                 vals = [c["value"] for c in cutpoints]
                 ascending = all(vals[i] < vals[i + 1] for i in range(len(vals) - 1))
-                descending = all(vals[i] > vals[i + 1] for i in range(len(vals) - 1))
+                # descending needs >= 2 points; otherwise it's vacuously true and
+                # would wrongly reverse a single-cut-off split.
+                descending = len(vals) >= 2 and all(
+                    vals[i] > vals[i + 1] for i in range(len(vals) - 1)
+                )
                 if not (ascending or descending):
                     messagebox.showwarning(
                         "Split",

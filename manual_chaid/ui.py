@@ -68,10 +68,13 @@ class TreeBuilderUI:
         vbar.pack(side=tk.RIGHT, fill=tk.Y)
         hbar.pack(side=tk.BOTTOM, fill=tk.X)
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        # scroll with wheel; zoom with Ctrl + wheel
+        # scroll with wheel; zoom with Ctrl + wheel; drag with left button to pan
         self.canvas.bind("<MouseWheel>", self._on_wheel)
         self.canvas.bind("<Shift-MouseWheel>", self._on_shift_wheel)
         self.canvas.bind("<Control-MouseWheel>", self._on_ctrl_wheel)
+        self.canvas.bind("<ButtonPress-1>", self._on_pan_start)
+        self.canvas.bind("<B1-Motion>", self._on_pan_move)
+        self.canvas.bind("<ButtonRelease-1>", self._on_pan_end)
         paned.add(left, weight=3)
 
         # --- right: scrollable controls
@@ -460,6 +463,16 @@ class TreeBuilderUI:
     def _on_ctrl_wheel(self, event):
         self.zoom_in() if event.delta > 0 else self.zoom_out()
         return "break"
+
+    def _on_pan_start(self, event):
+        self.canvas.scan_mark(event.x, event.y)
+        self.canvas.config(cursor="fleur")
+
+    def _on_pan_move(self, event):
+        self.canvas.scan_dragto(event.x, event.y, gain=1)
+
+    def _on_pan_end(self, event):
+        self.canvas.config(cursor="")
 
     def _render_image(self):
         """(Re)paint the cached base image at the current zoom factor."""

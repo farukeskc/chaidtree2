@@ -1,0 +1,460 @@
+"""tkinter front-end for ManualChaidTree.
+
+A single desktop window: the tree preview canvas on the left (a Plotly figure
+rendered to PNG via kaleido and painted here) and a scrollable side menu on the
+right with Split / Combine / Prune / History / Actions sections.
+"""
+from __future__ import annotations
+
+import io
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+
+import numpy as np
+
+from .binning import conditions_from_cutpoints
+from .node import OPERATORS
+from .render import build_figure, figure_to_png
+
+MONO = ("Consolas", 9)
+
+
+class TreeBuilderUI:
+    def __init__(self, tree):
+        self.tree = tree
+        self._photo = None  # keep a reference so Tk doesn't GC the image
+        self._candidates: dict = {}  # variable -> candidate dict for selected leaf
+        self._cutpoint_rows: list = []  # list of (frame, value_var, op_var)
+        self._current_var = None
+        self._current_specials: list = []
+
+        self.root = tk.Tk()
+        self.root.title("ManualChaidTree builder")
+        self.root.geometry("1280x780")
+        self._build_layout()
+        self._refresh_controls()
+        self.redraw()
+
+    # ------------------------------------------------------------- run/layout
+    def run(self):
+        self.root.mainloop()
+
+    def _build_layout(self):
+        paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
+        paned.pack(fill=tk.BOTH, expand=True)
+
+        # --- left: scrollable image canvas
+        left = ttk.Frame(paned)
+        self.canvas = tk.Canvas(left, bg="white")
+        hbar = ttk.Scrollbar(left, orient=tk.HORIZONTAL, command=self.canvas.xview)
+        vbar = ttk.Scrollbar(left, orient=tk.VERTICAL, command=self.canvas.yview)
+        self.canvas.configure(xscrollcommand=hbar.set, yscrollcommand=vbar.set)
+        vbar.pack(side=tk.RIGHT, fill=tk.Y)
+        hbar.pack(side=tk.BOTTOM, fill=tk.X)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        paned.add(left, weight=3)
+
+        # --- right: scrollable controls
+        right_outer = ttk.Frame(paned, width=380)
+        rc = tk.Canvas(right_outer, width=380, highlightthickness=0)
+        rsb = ttk.Scrollbar(right_outer, orient=tk.VERTICAL, command=rc.yview)
+        self.menu = ttk.Frame(rc)
+        self.menu.bind(
+            "<Configure>", lambda e: rc.configure(scrollregion=rc.bbox("all"))
+        )
+        rc.create_window((0, 0), window=self.menu, anchor="nw")
+        rc.configure(yscrollcommand=rsb.set)
+        rsb.pack(side=tk.RIGHT, fill=tk.Y)
+        rc.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        paned.add(right_outer, weight=1)
+
+        self._build_split_section()
+        self._build_combine_section()
+        self._build_prune_section()
+        self._build_history_section()
+        self._build_actions_section()
+
+    def _section(self, title) -> ttk.Frame:
+        lf = ttk.LabelFrame(self.menu, text=title)
+        lf.pack(fill=tk.X, padx=6, pady=4)
+        return lf
+
+    # ------------------------------------------------------------ split panel
+    def _build_split_section(self):
+        f = self._section("1. Split a leaf node")
+        ttk.Label(f, text="Leaf node:").pack(anchor="w", padx=4)
+        self.leaf_combo = ttk.Combobox(f, state="readonly")
+        self.leaf_combo.pack(fill=tk.X, padx=4)
+        self.leaf_combo.bind("<<ComboboxSelected>>", lambda e: self._load_candidates())
+
+        ttk.Label(f, text="Variables (by χ²):").pack(anchor="w", padx=4, pady=(6, 0))
+        self.var_list = tk.Listbox(f, height=8, font=MONO, exportselection=False)
+        self.var_list.pack(fill=tk.X, padx=4)
+        self.var_list.bind("<<ListboxSelect>>", lambda e: self._select_variable())
+
+        self.cut_label = ttk.Label(f, text="Cut-offs:", font=("TkDefaultFont", 9, "bold"))
+        self.cut_label.pack(anchor="w", padx=4, pady=(6, 0))
+        self.specials_label = ttk.Label(f, text="", foreground="#a0522d", wraplength=340)
+        self.specials_label.pack(anchor="w", padx=4)
+        self.cut_frame = ttk.Frame(f)
+        self.cut_frame.pack(fill=tk.X, padx=4)
+        self.cut_note = ttk.Label(f, text="", foreground="gray", wraplength=340)
+        self.cut_note.pack(anchor="w", padx=4)
+
+        btns = ttk.Frame(f)
+        btns.pack(fill=tk.X, padx=4, pady=4)
+        ttk.Button(btns, text="+ Add cut-off", command=self._add_cutpoint).pack(
+            side=tk.LEFT
+        )
+        ttk.Button(btns, text="Split", command=self._do_split).pack(side=tk.RIGHT)
+
+    def _add_cutpoint(self, value="", op="<"):
+        row = ttk.Frame(self.cut_frame)
+        row.pack(fill=tk.X, pady=1)
+        val_var = tk.StringVar(value=str(value))
+        op_var = tk.StringVar(value=op)
+        ttk.Entry(row, textvariable=val_var, width=12).pack(side=tk.LEFT)
+        ttk.Combobox(
+            row, textvariable=op_var, values=OPERATORS, width=4, state="readonly"
+        ).pack(side=tk.LEFT, padx=3)
+        ttk.Button(
+            row, text="✕", width=3, command=lambda: self._del_cutpoint(row)
+        ).pack(side=tk.LEFT)
+        self._cutpoint_rows.append((row, val_var, op_var))
+
+    def _del_cutpoint(self, row):
+        self._cutpoint_rows = [r for r in self._cutpoint_rows if r[0] is not row]
+        row.destroy()
+
+    def _clear_cutpoints(self):
+        for row, _, _ in self._cutpoint_rows:
+            row.destroy()
+        self._cutpoint_rows = []
+
+    def _load_candidates(self):
+        nid = self._selected_leaf_id()
+        if nid is None:
+            return
+        self.var_list.delete(0, tk.END)
+        self._candidates = {}
+        try:
+            results = self.tree.candidate_splits(nid)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Candidate splits failed", str(exc))
+            return
+        for r in results:
+            self._candidates[r["variable"]] = r
+            chi2 = r["chi2"]
+            p = r["pvalue"]
+            chi2_s = "    n/a" if chi2 is None or np.isnan(chi2) else f"{chi2:7.1f}"
+            p_s = "   n/a" if p is None or np.isnan(p) else f"{p:7.1g}"
+            flag = "" if r["splittable"] else "  (p>=.05)"
+            self.var_list.insert(
+                tk.END, f"{str(r['variable'])[:14]:<14} χ²={chi2_s} p={p_s}{flag}"
+            )
+            if not r["splittable"]:
+                self.var_list.itemconfig(tk.END, foreground="gray")
+        self._clear_cutpoints()
+        self.specials_label.config(text="")
+        self.cut_note.config(text="")
+        self._current_var = None
+
+    def _select_variable(self):
+        sel = self.var_list.curselection()
+        if not sel:
+            return
+        var = list(self._candidates.keys())[sel[0]]
+        cand = self._candidates[var]
+        self._current_var = var
+        self._clear_cutpoints()
+
+        conditions = cand["conditions"]
+        specials = [c for c in conditions if c.kind in ("eq", "isnull")]
+        self._current_specials = specials
+        if specials:
+            self.specials_label.config(
+                text="Forced bins: " + " | ".join(c.describe() for c in specials)
+            )
+        else:
+            self.specials_label.config(text="")
+
+        if cand["dtype"] == "numerical":
+            thresholds = sorted(
+                {
+                    b
+                    for c in conditions
+                    if c.kind == "range"
+                    for b in (c.low, c.high)
+                    if b is not None
+                }
+            )
+            for t in thresholds:
+                self._add_cutpoint(value=_fmt_num(t), op="<")
+            self.cut_note.config(
+                text="Edit / add / delete numeric cut-offs above, then Split."
+            )
+        else:
+            groups = [c for c in conditions if c.kind == "category"]
+            preview = " | ".join(c.describe() for c in groups)
+            self.cut_note.config(
+                text="Categorical: optbinning groups are used as-is.\n" + preview
+            )
+
+    def _do_split(self):
+        nid = self._selected_leaf_id()
+        if nid is None or self._current_var is None:
+            messagebox.showwarning("Split", "Select a leaf node and a variable first.")
+            return
+        var = self._current_var
+        cand = self._candidates[var]
+        try:
+            if cand["dtype"] == "numerical":
+                cutpoints = []
+                for _, val_var, op_var in self._cutpoint_rows:
+                    txt = val_var.get().strip()
+                    if txt == "":
+                        continue
+                    cutpoints.append({"op": op_var.get(), "value": float(txt)})
+                conditions = conditions_from_cutpoints(
+                    var, cutpoints, self._current_specials
+                )
+            else:
+                conditions = cand["conditions"]
+            res = self.tree.split(nid, var, conditions)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Split failed", str(exc))
+            return
+        messagebox.showinfo(
+            "Split",
+            f"Split node {nid} on '{var}'.\n"
+            f"χ²={_fmt(res['chi2'])}  p={_fmtp(res['pvalue'])}\n"
+            f"{len(res['children'])} child nodes created.",
+        )
+        self._refresh_controls()
+        self.redraw()
+
+    # ---------------------------------------------------------- combine panel
+    def _build_combine_section(self):
+        f = self._section("2. Combine child nodes")
+        ttk.Label(f, text="Parent node:").pack(anchor="w", padx=4)
+        self.combine_parent = ttk.Combobox(f, state="readonly")
+        self.combine_parent.pack(fill=tk.X, padx=4)
+        self.combine_parent.bind(
+            "<<ComboboxSelected>>", lambda e: self._load_combine_children()
+        )
+        ttk.Label(f, text="Children (multi-select):").pack(anchor="w", padx=4)
+        self.combine_list = tk.Listbox(
+            f, height=6, selectmode=tk.EXTENDED, font=MONO, exportselection=False
+        )
+        self.combine_list.pack(fill=tk.X, padx=4)
+        ttk.Button(f, text="Combine selected", command=self._do_combine).pack(
+            anchor="e", padx=4, pady=4
+        )
+
+    def _load_combine_children(self):
+        self.combine_list.delete(0, tk.END)
+        pid = _parse_id(self.combine_parent.get())
+        if pid is None:
+            return
+        self._combine_child_ids = []
+        for cid in self.tree.nodes[pid].children:
+            child = self.tree.nodes[cid]
+            tag = "leaf" if child.is_leaf else "internal"
+            self.combine_list.insert(
+                tk.END,
+                f"#{cid} n={child.n_samples} bad={child.target_rate:.1%} [{tag}]  "
+                f"{child.condition.describe()[:24]}",
+            )
+            self._combine_child_ids.append(cid)
+            if not child.is_leaf:
+                self.combine_list.itemconfig(tk.END, foreground="gray")
+
+    def _do_combine(self):
+        pid = _parse_id(self.combine_parent.get())
+        sel = self.combine_list.curselection()
+        if pid is None or len(sel) < 2:
+            messagebox.showwarning("Combine", "Select a parent and >= 2 child nodes.")
+            return
+        child_ids = [self._combine_child_ids[i] for i in sel]
+        try:
+            res = self.tree.combine(pid, child_ids)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Combine failed", str(exc))
+            return
+        messagebox.showinfo(
+            "Combine",
+            f"Merged {len(child_ids)} children of node {pid}.\n"
+            f"New χ²={_fmt(res['chi2'])}  p={_fmtp(res['pvalue'])}",
+        )
+        self._refresh_controls()
+        self.redraw()
+
+    # ------------------------------------------------------------ prune panel
+    def _build_prune_section(self):
+        f = self._section("3. Prune a node")
+        ttk.Label(f, text="Node (subtree will be removed):").pack(anchor="w", padx=4)
+        self.prune_combo = ttk.Combobox(f, state="readonly")
+        self.prune_combo.pack(fill=tk.X, padx=4)
+        ttk.Button(f, text="Prune node", command=self._do_prune).pack(
+            anchor="e", padx=4, pady=4
+        )
+
+    def _do_prune(self):
+        nid = _parse_id(self.prune_combo.get())
+        if nid is None:
+            messagebox.showwarning("Prune", "Select a node to prune.")
+            return
+        if not messagebox.askyesno(
+            "Prune", f"Remove all nodes below node {nid}?"
+        ):
+            return
+        try:
+            res = self.tree.prune(nid)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Prune failed", str(exc))
+            return
+        messagebox.showinfo("Prune", f"Removed {res['removed']} nodes.")
+        self._refresh_controls()
+        self.redraw()
+
+    # ---------------------------------------------------------- history panel
+    def _build_history_section(self):
+        f = self._section("4. Operation history")
+        self.history_list = tk.Listbox(f, height=7, font=MONO)
+        self.history_list.pack(fill=tk.X, padx=4)
+        ttk.Button(f, text="Undo last operation", command=self._do_undo).pack(
+            anchor="e", padx=4, pady=4
+        )
+
+    def _do_undo(self):
+        if not self.tree.undo():
+            messagebox.showinfo("Undo", "Nothing to undo.")
+            return
+        self._refresh_controls()
+        self.redraw()
+
+    # ----------------------------------------------------------- action panel
+    def _build_actions_section(self):
+        f = self._section("5. Actions")
+        ttk.Button(f, text="Compute Gini (training)", command=self._do_gini).pack(
+            fill=tk.X, padx=4, pady=2
+        )
+        ttk.Button(f, text="Save tree (pickle)…", command=self._do_save).pack(
+            fill=tk.X, padx=4, pady=2
+        )
+        ttk.Button(f, text="Export rules to Excel…", command=self._do_export).pack(
+            fill=tk.X, padx=4, pady=2
+        )
+        ttk.Button(
+            f, text="Open interactive view in browser", command=self._do_browser
+        ).pack(fill=tk.X, padx=4, pady=2)
+
+    def _do_gini(self):
+        try:
+            g = self.tree.gini()
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Gini", str(exc))
+            return
+        messagebox.showinfo("Gini", f"Training Gini = {g:.4f}")
+
+    def _do_save(self):
+        path = filedialog.asksaveasfilename(
+            defaultextension=".pkl", filetypes=[("Pickle", "*.pkl")]
+        )
+        if not path:
+            return
+        self.tree.save(path)
+        messagebox.showinfo("Save", f"Saved tree to\n{path}")
+
+    def _do_export(self):
+        path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")]
+        )
+        if not path:
+            return
+        self.tree.export_rules_excel(path)
+        messagebox.showinfo("Export", f"Exported rules to\n{path}")
+
+    def _do_browser(self):
+        try:
+            build_figure(self.tree).show()
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Browser view", str(exc))
+
+    # --------------------------------------------------------------- refresh
+    def _selected_leaf_id(self):
+        return _parse_id(self.leaf_combo.get())
+
+    def _refresh_controls(self):
+        leaves = sorted(self.tree.leaves(), key=lambda n: n.node_id)
+        self.leaf_combo["values"] = [
+            f"#{n.node_id}  n={n.n_samples}  bad={n.target_rate:.1%}" for n in leaves
+        ]
+        internal = sorted(self.tree.internal_nodes(), key=lambda n: n.node_id)
+        internal_vals = [
+            f"#{n.node_id}  split={n.split_variable}  ({len(n.children)} kids)"
+            for n in internal
+        ]
+        self.combine_parent["values"] = internal_vals
+        self.prune_combo["values"] = internal_vals
+
+        self.history_list.delete(0, tk.END)
+        for i, h in enumerate(self.tree.history, 1):
+            self.history_list.insert(tk.END, f"{i}. {h}")
+
+        # clear stale split selections
+        self.var_list.delete(0, tk.END)
+        self._clear_cutpoints()
+        self.specials_label.config(text="")
+        self.cut_note.config(text="")
+        self._current_var = None
+
+    # ---------------------------------------------------------------- redraw
+    def redraw(self):
+        try:
+            from PIL import Image, ImageTk
+
+            fig = build_figure(self.tree)
+            png = figure_to_png(fig)
+            img = Image.open(io.BytesIO(png))
+            self._photo = ImageTk.PhotoImage(img)
+            self.canvas.delete("all")
+            self.canvas.create_image(0, 0, anchor="nw", image=self._photo)
+            self.canvas.configure(scrollregion=(0, 0, img.width, img.height))
+        except Exception as exc:  # noqa: BLE001
+            self.canvas.delete("all")
+            self.canvas.create_text(
+                20,
+                20,
+                anchor="nw",
+                fill="red",
+                text=f"Could not render tree image:\n{exc}\n\n"
+                "Ensure 'kaleido' and 'pillow' are installed.",
+            )
+
+
+def _parse_id(text):
+    if not text:
+        return None
+    try:
+        return int(text.split()[0].lstrip("#"))
+    except (ValueError, IndexError):
+        return None
+
+
+def _fmt_num(x):
+    if float(x).is_integer():
+        return str(int(x))
+    return f"{x:.6g}"
+
+
+def _fmt(x):
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return "n/a"
+    return f"{x:.2f}"
+
+
+def _fmtp(x):
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return "n/a"
+    return f"{x:.3g}"

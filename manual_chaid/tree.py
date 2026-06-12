@@ -141,7 +141,9 @@ class ManualChaidTree:
 
         def sort_key(r):
             c = r["chi2"]
-            return -1e18 if (c is None or np.isnan(c)) else -c
+            chi = -1e18 if (c is None or np.isnan(c)) else -c
+            # splittable (p < 0.05) first, then by chi2 descending within each group
+            return (0 if r["splittable"] else 1, chi)
 
         results.sort(key=sort_key)
         return results
@@ -341,6 +343,14 @@ class ManualChaidTree:
 
         rec(0, positions)
         return result
+
+    def predict_node(self, X: pd.DataFrame) -> np.ndarray:
+        """Return the leaf node_id each row of ``X`` falls into (-1 if unrouted).
+
+        Works on a view-only (data-free) tree too. Pair with :meth:`get_node` to
+        inspect the matched leaf, or with :meth:`predict_proba` for its score.
+        """
+        return self._route(X)
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
         """Score new rows with the target rate of the leaf they fall into."""

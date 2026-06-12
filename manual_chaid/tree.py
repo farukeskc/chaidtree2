@@ -167,7 +167,9 @@ class ManualChaidTree:
         bin_ids = assign_children_bins(conditions, sub)
         chi2, pval, _ = chi2_from_bins(bin_ids, y_sub)
 
-        # Build child masks, dropping empty bins.
+        # Build child masks, dropping empty bins. Children keep the *condition*
+        # order (forced eq/isnull bins first, then numeric ranges in the user's
+        # ascending cut-off order) -- they are intentionally NOT re-sorted by rate.
         built = []
         for i, cond in enumerate(conditions):
             sel = idx[bin_ids == i]
@@ -175,15 +177,13 @@ class ManualChaidTree:
                 continue
             full = np.zeros(len(self.y), dtype=bool)
             full[sel] = True
-            rate = self.y[sel].mean()
-            built.append((cond, full, rate))
+            built.append((cond, full))
         if len(built) < 2:
             raise ValueError("Split produced fewer than two non-empty bins")
 
         self._snapshot()
-        built.sort(key=lambda t: t[2])  # rank-order children by target rate
         child_ids = []
-        for cond, full, _ in built:
+        for cond, full in built:
             cid = self._next_id
             self._next_id += 1
             child = ChaidNode(
@@ -201,7 +201,7 @@ class ManualChaidTree:
         node.split_variable = variable
         node.split_chi2 = chi2
         node.split_pvalue = pval
-        node.split_conditions = [c for c, _, _ in built]
+        node.split_conditions = [c for c, _ in built]
         self._record(
             f"Split node {node_id} on '{variable}' -> {len(child_ids)} bins "
             f"(chi2={_fmt(chi2)}, p={_fmtp(pval)})"
@@ -241,15 +241,17 @@ class ManualChaidTree:
         self._masks[mid] = merged_mask
         self._compute_stats(mid)
 
-        # Replace the selected children with the merged node, keep the rest.
+        # Replace the selected children with the merged node, keeping the
+        # remaining children's left-to-right order; the merged node takes the
+        # position of the first selected child (order is NOT re-sorted by rate).
+        first_sel_idx = min(i for i, c in enumerate(parent.children) if c in sel)
+        insert_at = sum(1 for c in parent.children[:first_sel_idx] if c not in sel)
         new_children = [c for c in parent.children if c not in sel]
-        new_children.append(mid)
+        new_children.insert(insert_at, mid)
         for c in sel:
             del self.nodes[c]
             del self._masks[c]
 
-        # Rank-order remaining children by target rate.
-        new_children.sort(key=lambda cid: self.nodes[cid].target_rate)
         parent.children = new_children
         parent.split_conditions = [self.nodes[c].condition for c in new_children]
 

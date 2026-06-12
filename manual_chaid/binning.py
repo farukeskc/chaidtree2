@@ -119,47 +119,66 @@ def numeric_ranges_from_thresholds(
 _OP_LOWER_INCLUSIVE = {"<=": True, ">": True, "<": False, ">=": False}
 
 
-def conditions_from_cutpoints(var: str, cutpoints: list, specials: list) -> list:
+def conditions_from_cutpoints(
+    var: str, cutpoints: list, specials: list, descending: bool = False
+) -> list:
     """Translate the UI cut-off editor state into ordered bin Conditions.
 
     ``specials`` is a list of pre-built Condition objects (eq / isnull) that take
-    precedence and are emitted first.  ``cutpoints`` is a list of
-    ``{"op": <one of OPERATORS>, "value": float}`` rows for the numeric thresholds;
-    an ``"="`` row additionally emits a singleton ``eq`` bin.
+    precedence and are emitted first (so forced bins render left-most).
+    ``cutpoints`` is a list of ``{"op": <one of OPERATORS>, "value": float}`` rows
+    for the numeric thresholds; an ``"="`` row additionally emits a singleton
+    ``eq`` bin.
+
+    The numeric range bins are emitted smallest-to-largest by default; when
+    ``descending`` is True they are emitted largest-to-smallest, matching the
+    direction of the user's (validated monotonic) cut-off list.
+
+    Only the configured ``specials`` (the ``pre_separate_*`` / null bins) are
+    pinned left-most.  A manually-added ``"="`` cut-off is kept at its value
+    position within the ordered bins -- it is NOT moved to the front.
     """
     conds: list[Condition] = list(specials)
 
-    eq_rows = [c for c in cutpoints if c.get("op") == "="]
-    ineq_rows = [c for c in cutpoints if c.get("op") in _OP_LOWER_INCLUSIVE]
+    # Scan cut-offs in ascending value order, building the range bins between
+    # consecutive inequality boundaries and inserting manual "=" singleton bins
+    # at their value position (precedence in assign_children_bins resolves the
+    # overlap between an "=" bin and the range that contains it).
+    pts = sorted(cutpoints, key=lambda c: float(c["value"]))
+    has_ineq = any(c.get("op") in _OP_LOWER_INCLUSIVE for c in pts)
 
-    for c in eq_rows:
-        conds.append(Condition(var, "eq", value=float(c["value"])))
-
-    # Build boundaries with inclusivity from operators.
-    boundaries = sorted(
-        ((float(c["value"]), _OP_LOWER_INCLUSIVE[c["op"]]) for c in ineq_rows),
-        key=lambda t: t[0],
-    )
-    if not boundaries:
-        if not eq_rows:
-            conds.append(Condition(var, "range"))
-        return conds
-
-    ts = [b[0] for b in boundaries]
-    incl = [b[1] for b in boundaries]
-    conds.append(Condition(var, "range", high=ts[0], high_inclusive=incl[0]))
-    for k in range(1, len(ts)):
-        conds.append(
+    rest: list[Condition] = []
+    prev_low = None
+    prev_low_incl = False
+    for c in pts:
+        val = float(c["value"])
+        op = c.get("op")
+        if op == "=":
+            rest.append(Condition(var, "eq", value=val))
+            continue
+        if op not in _OP_LOWER_INCLUSIVE:
+            continue
+        incl = _OP_LOWER_INCLUSIVE[op]  # does ``val`` belong to the lower segment?
+        rest.append(
             Condition(
                 var,
                 "range",
-                low=ts[k - 1],
-                low_inclusive=not incl[k - 1],
-                high=ts[k],
-                high_inclusive=incl[k],
+                low=prev_low,
+                low_inclusive=prev_low_incl,
+                high=val,
+                high_inclusive=incl,
             )
         )
-    conds.append(Condition(var, "range", low=ts[-1], low_inclusive=not incl[-1]))
+        prev_low, prev_low_incl = val, not incl
+    if has_ineq:
+        rest.append(Condition(var, "range", low=prev_low, low_inclusive=prev_low_incl))
+    else:
+        # no inequality boundaries -> one catch-all bin for everything else
+        rest.append(Condition(var, "range"))
+
+    if descending:
+        rest.reverse()
+    conds.extend(rest)
     return conds
 
 

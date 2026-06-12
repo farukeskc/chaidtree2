@@ -155,23 +155,46 @@ class TreeBuilderUI:
 
     def _add_cutpoint(self, value="", op="<"):
         row = ttk.Frame(self.cut_frame)
-        row.pack(fill=tk.X, pady=1)
         val_var = tk.StringVar(value=str(value))
         op_var = tk.StringVar(value=op)
-        ttk.Entry(row, textvariable=val_var, width=12).pack(side=tk.LEFT)
+        ttk.Entry(row, textvariable=val_var, width=10).pack(side=tk.LEFT)
         op_combo = ttk.Combobox(
             row, textvariable=op_var, values=OPERATORS, width=4, state="readonly"
         )
         op_combo.pack(side=tk.LEFT, padx=3)
         self._no_combo_wheel(op_combo)
         ttk.Button(
-            row, text="✕", width=3, command=lambda: self._del_cutpoint(row)
+            row, text="▲", width=2, command=lambda: self._move_cutpoint(row, -1)
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            row, text="▼", width=2, command=lambda: self._move_cutpoint(row, +1)
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            row, text="✕", width=2, command=lambda: self._del_cutpoint(row)
         ).pack(side=tk.LEFT)
         self._cutpoint_rows.append((row, val_var, op_var))
+        self._repack_cutpoints()
 
     def _del_cutpoint(self, row):
         self._cutpoint_rows = [r for r in self._cutpoint_rows if r[0] is not row]
         row.destroy()
+
+    def _move_cutpoint(self, row, delta):
+        rows = self._cutpoint_rows
+        idx = next((i for i, r in enumerate(rows) if r[0] is row), None)
+        if idx is None:
+            return
+        j = idx + delta
+        if 0 <= j < len(rows):
+            rows[idx], rows[j] = rows[j], rows[idx]
+            self._repack_cutpoints()
+
+    def _repack_cutpoints(self):
+        """Re-pack rows top-to-bottom in their current list order."""
+        for r in self._cutpoint_rows:
+            r[0].pack_forget()
+        for r in self._cutpoint_rows:
+            r[0].pack(fill=tk.X, pady=1)
 
     def _clear_cutpoints(self):
         for row, _, _ in self._cutpoint_rows:
@@ -238,7 +261,8 @@ class TreeBuilderUI:
             for t in thresholds:
                 self._add_cutpoint(value=_fmt_num(t), op="<")
             self.cut_note.config(
-                text="Edit / add / delete numeric cut-offs above, then Split."
+                text="Edit / add / delete / reorder (▲▼) cut-offs. They must be "
+                "strictly monotonic (smallest→largest or largest→smallest) to split."
             )
         else:
             groups = [c for c in conditions if c.kind == "category"]
@@ -262,8 +286,19 @@ class TreeBuilderUI:
                     if txt == "":
                         continue
                     cutpoints.append({"op": op_var.get(), "value": float(txt)})
+                vals = [c["value"] for c in cutpoints]
+                ascending = all(vals[i] < vals[i + 1] for i in range(len(vals) - 1))
+                descending = all(vals[i] > vals[i + 1] for i in range(len(vals) - 1))
+                if not (ascending or descending):
+                    messagebox.showwarning(
+                        "Split",
+                        "Cut-off points must be strictly monotonic — sorted either "
+                        "smallest→largest or largest→smallest. Use the ▲▼ buttons "
+                        "to reorder them.",
+                    )
+                    return
                 conditions = conditions_from_cutpoints(
-                    var, cutpoints, self._current_specials
+                    var, cutpoints, self._current_specials, descending=descending
                 )
             else:
                 conditions = cand["conditions"]

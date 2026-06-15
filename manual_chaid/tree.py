@@ -480,6 +480,14 @@ class ManualChaidTree:
         df.to_excel(path, index=False)
         return df
 
+    def export_history_excel(self, path: str):
+        """Write the operation history (one row per logged step) to Excel."""
+        df = pd.DataFrame(
+            {"Step": range(1, len(self.history) + 1), "Operation": list(self.history)}
+        )
+        df.to_excel(path, index=False)
+        return df
+
     # -- image export ---------------------------------------------------------
     def save_png(self, path: str, scale: float = 2.0) -> str:
         """Render the tree preview to a PNG file (requires plotly + kaleido)."""

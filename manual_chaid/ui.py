@@ -492,6 +492,11 @@ class TreeBuilderUI:
         ttk.Button(f, text="Save tree image (PNG)…", command=self._do_save_png).pack(
             fill=tk.X, padx=4, pady=2
         )
+        ttk.Button(
+            f,
+            text="Export operation history to Excel…",
+            command=self._do_export_history,
+        ).pack(fill=tk.X, padx=4, pady=2)
 
     def _do_gini(self):
         try:
@@ -518,6 +523,18 @@ class TreeBuilderUI:
             return
         self.tree.export_rules_excel(path)
         messagebox.showinfo("Export", f"Exported rules to\n{path}")
+
+    def _do_export_history(self):
+        if not self.tree.history:
+            messagebox.showinfo("Export history", "No operations to export yet.")
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")]
+        )
+        if not path:
+            return
+        self.tree.export_history_excel(path)
+        messagebox.showinfo("Export history", f"Exported operation history to\n{path}")
 
     def _do_save_png(self):
         path = filedialog.asksaveasfilename(

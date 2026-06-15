@@ -17,6 +17,7 @@ from .binning import (
     DEFAULT_MIN_BIN_SIZE,
     assign_children_bins,
     compute_candidate,
+    merge_combined_conditions,
 )
 from .node import ChaidNode, Condition
 from .stats import chi2_from_bins, gini_from_scores
@@ -223,7 +224,7 @@ class ManualChaidTree:
         self._snapshot()
         members = [self.nodes[c].condition for c in sel]
         var = parent.split_variable
-        merged_cond = Condition(var, "or", members=members)
+        merged_cond = merge_combined_conditions(var, members)
 
         merged_mask = np.zeros(len(self.y), dtype=bool)
         for c in sel:

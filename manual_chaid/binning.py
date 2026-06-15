@@ -182,6 +182,73 @@ def conditions_from_cutpoints(
     return conds
 
 
+def merge_combined_conditions(var: str, conditions: list) -> Condition:
+    """Merge selected child conditions into one condition for a *combine*.
+
+    Consecutive numeric range bins are collapsed into a single wider range --
+    combining adjacent bins is the same as deleting the cut-point(s) between
+    them, so ``x < 2.5`` + ``2.5 <= x < 5.0`` becomes ``x < 5.0`` rather than the
+    verbose ``x < 2.5 OR 2.5 <= x < 5.0``.
+
+    Anything that can't chain (a gap between ranges, or a mix of range with
+    categorical/eq/isnull bins) keeps the ``OR`` join.  Returns a single
+    ``range`` Condition when the whole selection collapses to one run, otherwise
+    a ``kind="or"`` Condition over the (possibly collapsed) members.
+
+    New Condition objects are always constructed; the input ``conditions`` are
+    never mutated (keeps the caller's undo snapshot intact).
+    """
+    if not all(c.kind == "range" for c in conditions):
+        return Condition(var, "or", members=list(conditions))
+
+    def low_key(c):
+        return float("-inf") if c.low is None else c.low
+
+    ordered = sorted(conditions, key=low_key)
+
+    def consecutive(a: Condition, b: Condition) -> bool:
+        return (
+            a.high is not None
+            and b.low is not None
+            and a.high == b.low
+            and a.high_inclusive != b.low_inclusive
+        )
+
+    runs: list[Condition] = []
+    start = ordered[0]
+    prev = ordered[0]
+    for cur in ordered[1:]:
+        if consecutive(prev, cur):
+            prev = cur
+            continue
+        runs.append(
+            Condition(
+                var,
+                "range",
+                low=start.low,
+                low_inclusive=start.low_inclusive,
+                high=prev.high,
+                high_inclusive=prev.high_inclusive,
+            )
+        )
+        start = cur
+        prev = cur
+    runs.append(
+        Condition(
+            var,
+            "range",
+            low=start.low,
+            low_inclusive=start.low_inclusive,
+            high=prev.high,
+            high_inclusive=prev.high_inclusive,
+        )
+    )
+
+    if len(runs) == 1:
+        return runs[0]
+    return Condition(var, "or", members=runs)
+
+
 def categorical_conditions_from_groups(var: str, items: list, specials: list) -> list:
     """Build category bin Conditions from a (category, group-id) assignment.
 

@@ -450,6 +450,14 @@ class TreeBuilderUI:
             return
         messagebox.showinfo("Prune", f"Removed {res['removed']} nodes.")
         self._refresh_controls()
+        # Clear the now-stale prune selection.
+        self.prune_combo.set("")
+        # Drop any combine selection that pointed at a node removed by the prune.
+        cpid = _parse_id(self.combine_parent.get())
+        if cpid is None or cpid not in self.tree.nodes or self.tree.nodes[cpid].is_leaf:
+            self.combine_parent.set("")
+            self.combine_list.delete(0, tk.END)
+            self._combine_child_ids = []
         self.redraw()
 
     # ---------------------------------------------------------- history panel

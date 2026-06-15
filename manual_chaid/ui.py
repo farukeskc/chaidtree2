@@ -14,7 +14,7 @@ import numpy as np
 
 from .binning import categorical_conditions_from_groups, conditions_from_cutpoints
 from .node import OPERATORS
-from .render import build_figure, figure_to_png
+from .render import build_figure, figure_to_png, node_pixel_centers
 
 MONO = ("Consolas", 9)
 
@@ -25,6 +25,9 @@ class TreeBuilderUI:
         self._photo = None  # keep a reference so Tk doesn't GC the image
         self._base_img = None  # full-res rendered PIL image (pre-zoom)
         self._zoom = 1.0
+        self._node_centers = {}  # node_id -> (px, py, full_text) in base-image px
+        self._tip = None  # tooltip Toplevel, created lazily
+        self._tip_node = None  # node_id currently shown in the tooltip
         self._candidates: dict = {}  # variable -> candidate dict for selected leaf
         self._cutpoint_rows: list = []  # numeric: list of (frame, value_var, op_var)
         self._cat_rows: list = []  # categorical: list of (frame, category, group_var)
@@ -76,6 +79,9 @@ class TreeBuilderUI:
         self.canvas.bind("<ButtonPress-1>", self._on_pan_start)
         self.canvas.bind("<B1-Motion>", self._on_pan_move)
         self.canvas.bind("<ButtonRelease-1>", self._on_pan_end)
+        # hover a truncated OR node to see its full condition
+        self.canvas.bind("<Motion>", self._on_hover)
+        self.canvas.bind("<Leave>", lambda e: self._hide_tip())
         paned.add(left, weight=1)  # left canvas absorbs extra space on resize
 
         # --- right: scrollable controls (fixed-width sidebar)
@@ -597,6 +603,7 @@ class TreeBuilderUI:
 
     def _set_zoom(self, zoom: float):
         self._zoom = max(0.1, min(8.0, zoom))
+        self._hide_tip()
         self._render_image()
 
     def _on_wheel(self, event):
@@ -638,6 +645,7 @@ class TreeBuilderUI:
         return "break"
 
     def _on_pan_start(self, event):
+        self._hide_tip()
         self.canvas.scan_mark(event.x, event.y)
         self.canvas.config(cursor="fleur")
 
@@ -646,6 +654,57 @@ class TreeBuilderUI:
 
     def _on_pan_end(self, event):
         self.canvas.config(cursor="")
+
+    # ---------------------------------------------------------------- hover tip
+    def _on_hover(self, event):
+        """Show the full condition when hovering a truncated OR node."""
+        if not self._node_centers or self._zoom <= 0:
+            return self._hide_tip()
+        # cursor -> base-image pixels (canvasx/y handle scroll, zoom the resize)
+        bx = self.canvas.canvasx(event.x) / self._zoom
+        by = self.canvas.canvasy(event.y) / self._zoom
+        threshold = 70.0  # base-image px from a node centre
+        best_id = None
+        best_d2 = threshold * threshold
+        for nid, (px, py, full_text) in self._node_centers.items():
+            if not full_text:
+                continue
+            d2 = (px - bx) ** 2 + (py - by) ** 2
+            if d2 <= best_d2:
+                best_d2 = d2
+                best_id = nid
+        if best_id is None:
+            return self._hide_tip()
+        self._show_tip(best_id, self._node_centers[best_id][2], event)
+
+    def _show_tip(self, node_id, text, event):
+        if self._tip is not None and self._tip_node == node_id:
+            # already shown; just follow the cursor
+            self._tip.wm_geometry(f"+{event.x_root + 14}+{event.y_root + 14}")
+            return
+        self._hide_tip()
+        tip = tk.Toplevel(self.canvas)
+        tip.wm_overrideredirect(True)
+        tip.wm_geometry(f"+{event.x_root + 14}+{event.y_root + 14}")
+        tk.Label(
+            tip,
+            text=text,
+            justify=tk.LEFT,
+            background="#ffffe0",
+            relief=tk.SOLID,
+            borderwidth=1,
+            font=MONO,
+            padx=6,
+            pady=4,
+        ).pack()
+        self._tip = tip
+        self._tip_node = node_id
+
+    def _hide_tip(self):
+        if self._tip is not None:
+            self._tip.destroy()
+            self._tip = None
+            self._tip_node = None
 
     def _render_image(self):
         """(Re)paint the cached base image at the current zoom factor."""
@@ -665,15 +724,18 @@ class TreeBuilderUI:
     # ---------------------------------------------------------------- redraw
     def redraw(self):
         """Re-render the tree to a base image, then paint it at current zoom."""
+        self._hide_tip()
         try:
             from PIL import Image
 
             fig = build_figure(self.tree)
             png = figure_to_png(fig)
             self._base_img = Image.open(io.BytesIO(png))
+            self._node_centers = node_pixel_centers(self.tree)
             self._render_image()
         except Exception as exc:  # noqa: BLE001
             self._base_img = None
+            self._node_centers = {}
             self.canvas.delete("all")
             self.canvas.create_text(
                 20,

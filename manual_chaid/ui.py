@@ -413,6 +413,14 @@ class TreeBuilderUI:
             f"New χ²={_fmt(res['chi2'])}  p={_fmtp(res['pvalue'])}",
         )
         self._refresh_controls()
+        # Keep the same parent selected and repopulate its (now fewer) children,
+        # so the multi-select list no longer shows the merged-away nodes.
+        if pid in self.tree.nodes:
+            for val in self.combine_parent["values"]:
+                if _parse_id(val) == pid:
+                    self.combine_parent.set(val)
+                    break
+            self._load_combine_children()
         self.redraw()
 
     # ------------------------------------------------------------ prune panel

@@ -131,7 +131,7 @@ def _fmt(x: float) -> str:
         return ""
     if float(x).is_integer():
         return str(int(x))
-    return f"{x:.4g}"
+    return repr(float(x))
 
 
 @dataclass

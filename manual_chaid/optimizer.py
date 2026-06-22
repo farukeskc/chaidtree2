@@ -431,3 +431,59 @@ class ChaidTreeOptimizer:
             goal_df.to_excel(xl, sheet_name="Goal", index=False)
             def_df.to_excel(xl, sheet_name="Definition", index=False)
         return path
+
+    # -------------------------------------------------------------- T-SQL rules
+    def _rule_sql(self, leaf_id: int) -> str:
+        """AND-joined T-SQL predicate for the rule chain root->leaf."""
+        preds = []
+        cur = self.tree.nodes[leaf_id]
+        while cur.parent_id is not None:
+            preds.append(cur.condition.to_sql())
+            cur = self.tree.nodes[cur.parent_id]
+        preds.reverse()
+        return " AND ".join(preds) if preds else "1 = 1"
+
+    def export_rules_sql(
+        self, result: "SolveResult", path: str = None, table: str = "data"
+    ) -> str:
+        """Emit MSSQL (T-SQL) that scores ``table`` against the optimized tree.
+
+        Adds three columns to ``SELECT *``: ``node_id`` (the leaf each row falls
+        into), ``decision`` (the optimizer's assigned decision) and ``bad_ratio``
+        (the leaf's target/bad rate). Returns the SQL text; if ``path`` is given
+        the SQL is also written there.
+        """
+        from .node import _sql_literal
+
+        def case_block(alias: str, value_of) -> str:
+            lines = [f"    CASE"]
+            for leaf in self.leaves:
+                lines.append(f"      WHEN {self._rule_sql(leaf)} THEN {value_of(leaf)}")
+            lines.append("      ELSE NULL")
+            lines.append(f"    END AS {alias}")
+            return "\n".join(lines)
+
+        node_id_case = case_block("node_id", lambda l: str(l))
+        decision_case = case_block(
+            "decision",
+            lambda l: _sql_literal(result.assignment[l])
+            if l in result.assignment
+            else "NULL",
+        )
+        bad_ratio_case = case_block(
+            "bad_ratio", lambda l: _sql_literal(round(self.tree.nodes[l].target_rate, 6))
+        )
+
+        sql = (
+            "SELECT *,\n"
+            + node_id_case
+            + ",\n"
+            + decision_case
+            + ",\n"
+            + bad_ratio_case
+            + f"\nFROM {table}"
+        )
+        if path is not None:
+            with open(path, "w") as fh:
+                fh.write(sql)
+        return sql

@@ -125,6 +125,52 @@ class Condition:
         hi_br = "]" if self.high_inclusive else ")"
         return f"{lo_br}{_fmt(self.low)}, {_fmt(self.high)}{hi_br}"
 
+    # -- SQL ------------------------------------------------------------------
+    def to_sql(self) -> str:
+        """A valid T-SQL (MSSQL) boolean predicate for this condition.
+
+        Mirrors :meth:`evaluate` so SQL routing matches Python routing. NULL
+        handling is implicit: range / category / eq comparisons against NULL
+        yield ``UNKNOWN`` in T-SQL (row excluded), exactly like ``evaluate``'s
+        ``notna`` guard; only an explicit ``isnull`` matches missing values.
+        """
+        col = _sql_ident(self.variable)
+        if self.kind == "or":
+            members = [m.to_sql() for m in (self.members or ())]
+            return "(" + " OR ".join(members) + ")" if members else "(1 = 0)"
+        if self.kind == "isnull":
+            return f"{col} IS NULL"
+        if self.kind == "eq":
+            return f"{col} = {_sql_literal(self.value)}"
+        if self.kind == "category":
+            cats = ", ".join(_sql_literal(c) for c in (self.categories or ()))
+            return f"{col} IN ({cats})"
+        # range
+        parts = []
+        if self.low is not None:
+            op = ">=" if self.low_inclusive else ">"
+            parts.append(f"{col} {op} {_sql_literal(self.low)}")
+        if self.high is not None:
+            op = "<=" if self.high_inclusive else "<"
+            parts.append(f"{col} {op} {_sql_literal(self.high)}")
+        if not parts:
+            return f"{col} IS NOT NULL"
+        return " AND ".join(parts)
+
+
+def _sql_ident(name) -> str:
+    """Bracket-quote a column name for T-SQL, escaping any ``]``."""
+    return "[" + str(name).replace("]", "]]") + "]"
+
+
+def _sql_literal(v) -> str:
+    """Render a value as a T-SQL literal: numbers bare, everything else quoted."""
+    if isinstance(v, bool):
+        return "1" if v else "0"
+    if isinstance(v, (int, float, np.integer, np.floating)):
+        return _fmt(v)
+    return "'" + str(v).replace("'", "''") + "'"
+
 
 def _fmt(x: float) -> str:
     if x is None:

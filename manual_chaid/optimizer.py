@@ -132,6 +132,7 @@ class ChaidTreeOptimizer:
         self.leaf_ids = np.asarray(tree.predict_node(self.X))
         # leaves that actually receive samples (skip unrouted -1)
         self.leaves = sorted(int(l) for l in np.unique(self.leaf_ids) if l >= 0)
+        self.last_result = None  # most recent SolveResult (set by solve)
 
     @property
     def columns(self) -> list:
@@ -275,7 +276,8 @@ class ChaidTreeOptimizer:
                         assignment[l] = d
         objective = pulp.value(prob.objective) if status == "Optimal" else None
         kpi_values = self._realised_kpis(spec, S, assignment)
-        return SolveResult(status, assignment, objective, kpi_values)
+        self.last_result = SolveResult(status, assignment, objective, kpi_values)
+        return self.last_result
 
     def _add_constraint(self, prob, x, S, spec, c):
         import pulp
@@ -444,7 +446,7 @@ class ChaidTreeOptimizer:
         return " AND ".join(preds) if preds else "1 = 1"
 
     def export_rules_sql(
-        self, result: "SolveResult", path: str = None, table: str = "data"
+        self, path: str = None, result: "SolveResult" = None, table: str = "data"
     ) -> str:
         """Emit MSSQL (T-SQL) that scores ``table`` against the optimized tree.
 
@@ -452,8 +454,20 @@ class ChaidTreeOptimizer:
         into), ``decision`` (the optimizer's assigned decision) and ``bad_ratio``
         (the leaf's target/bad rate). Returns the SQL text; if ``path`` is given
         the SQL is also written there.
+
+        ``result`` defaults to the most recent :meth:`solve` / :meth:`optimize`
+        result, so the usual call is ``optimizer.export_rules_sql("rules.sql")``.
+        Pass ``result=`` explicitly to render a specific :class:`SolveResult`.
         """
         from .node import _sql_literal
+
+        if result is None:
+            result = self.last_result
+        if result is None:
+            raise ValueError(
+                "No optimization result available. Run solve()/optimize() first, "
+                "or pass result=<SolveResult>."
+            )
 
         def case_block(alias: str, value_of) -> str:
             lines = [f"    CASE"]
